@@ -1,0 +1,14 @@
+"""
+Naukri Auto Applier
+Developed by Aditya Kumar
+GitHub: https://github.com/aditya-life/Naukri_auto_applier
+"""
+
+# Naukri.com Account Access Credentials
+username = "YOUR_NAUKRI_EMAIL_OR_MOBILE"
+password = "YOUR_NAUKRI_PASSWORD"
+
+# AI Client configuration (if use_AI = True in settings)
+llm_api_url = "https://api.openai.com/v1/"
+llm_api_key = "YOUR_API_KEY_HERE"
+llm_model = "gemini-1.5-flash"

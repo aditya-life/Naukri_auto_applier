@@ -42,9 +42,15 @@ pip3 install undetected-chromedriver selenium pyautogui
 ```
 
 ### 2. Configuration
-Open `config/` files to customize the bot:
-- **`config/auth.py`**: Configure your Naukri.com registered `username` (email/phone) and `password`.
-- **`config/naukri_settings.py`**: Add your target keywords (e.g., `["Full Stack Developer", "Software Engineer"]`), `search_location`, and `experience_years`.
+Create your credentials configuration from the provided example:
+1. Copy the example file `config/auth.py.example` to `config/auth.py`:
+   ```bash
+   cp config/auth.py.example config/auth.py
+   ```
+2. Open the config files to customize the bot:
+   - **`config/auth.py`**: Enter your Naukri.com registered `username` (email/phone) and `password`.
+   - **`config/personal.py`**: Enter your personal details like name, phone number, address, and local resume path.
+   - **`config/naukri_settings.py`**: Customize search settings (e.g., `search_keywords`, `search_location`, and `experience_years`).
 
 ---
 
