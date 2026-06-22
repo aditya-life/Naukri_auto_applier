@@ -14,7 +14,7 @@ sys.path.append(project_dir)
 from config.naukri_settings import search_keywords, search_location
 from modules.chrome_launcher import driver, wait, actions
 from modules.utilities import print_lg, make_directories, initialize_logs_path
-from modules.naukri_auth import is_logged_in_naukri, login_naukri
+from modules.naukri_auth import is_logged_in_naukri, login_naukri, update_resume_on_naukri_profile
 from modules.naukri_applier import search_naukri_jobs, run_naukri_loop
 
 def main():
@@ -41,7 +41,10 @@ def main():
             search_naukri_jobs(keyword, search_location)
             
             # Execute application loop for this keyword (default: up to 3 pages)
-            run_naukri_loop(max_pages=3)
+            result = run_naukri_loop(max_pages=3)
+            if result == "LIMIT_REACHED":
+                print_lg("Stopping main loop as the daily application limit of 50 is reached.")
+                break
             
     except Exception as e:
         print_lg("A critical error occurred in main execution flow:", e)

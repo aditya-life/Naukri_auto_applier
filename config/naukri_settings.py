@@ -23,11 +23,11 @@ safe_mode = True                    # True or False, Note: True or False are cas
 
 # Search Configuration
 # Job search queries to loop through
-search_keywords = ["Full Stack Developer", "Software Engineer", "Web Developer"]
+search_keywords = ["IT Support Engineer", "Service Desk Engineer", "L1 Support", "L2 Support", "Desktop Support", "System Administrator"]
 # Naukri locations
 search_location = "India"
 # Naukri experience level (Years)
-experience_years = 1  # 0 for fresher, 1, 2, 3 etc.
+experience_years = 4  # 0 for fresher, 1, 2, 3 etc.
 
 # Enable AI answering for any screening questionnaires if they appear
 use_AI = False

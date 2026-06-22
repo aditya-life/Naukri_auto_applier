@@ -114,3 +114,45 @@ def login_naukri() -> None:
     except Exception:
         print_lg("Naukri auto login verification failed. Requesting manual login...")
         manual_login_retry(is_logged_in_naukri, 2)
+
+def update_resume_on_naukri_profile() -> None:
+    '''
+    Navigates to the Naukri profile page and uploads the resume specified in config/personal.py
+    '''
+    from config.personal import default_resume_path
+    import os
+    if not default_resume_path or not os.path.exists(default_resume_path):
+        print_lg(f"Resume path '{default_resume_path}' not found or not specified. Skipping profile resume update.")
+        return
+        
+    print_lg(f"Navigating to Naukri profile to verify/update resume: {default_resume_path}...")
+    try:
+        driver.get("https://www.naukri.com/mnjuser/profile")
+        time.sleep(5)
+        
+        # Locate the file input for resume upload
+        upload_element = None
+        for selector in [
+            (By.ID, "attachCV"),
+            (By.XPATH, "//input[@type='file' and contains(@id, 'CV')]"),
+            (By.XPATH, "//input[@type='file' and contains(@name, 'CV')]"),
+            (By.XPATH, "//input[@type='file']")
+        ]:
+            try:
+                el = driver.find_element(*selector)
+                if el:
+                    upload_element = el
+                    break
+            except Exception:
+                pass
+                
+        if upload_element:
+            print_lg("Found resume upload element. Uploading new resume...")
+            upload_element.send_keys(os.path.abspath(default_resume_path))
+            time.sleep(5) # Wait for upload to complete
+            print_lg("Resume uploaded successfully on Naukri profile!")
+        else:
+            print_lg("Could not locate the resume upload input element on the profile page.")
+            
+    except Exception as e:
+        print_lg("Error while updating resume on profile:", e)
