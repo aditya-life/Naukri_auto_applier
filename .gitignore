@@ -1,0 +1,16 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS generated
+.DS_Store
+
+# User configurations
+config/auth.py
+
+# Local logs and output excels
+logs/
+all excels/
+*.log
+*.csv
