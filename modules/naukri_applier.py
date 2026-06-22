@@ -141,12 +141,13 @@ def run_naukri_loop(max_pages=5):
         print_lg(f"\n====== Processing Naukri Search Results Page {page} ======")
         time.sleep(2)
         
-        # Locate job card elements
+        # Locate job card elements (using multiple common class names or article tags)
         job_cards = []
         card_selectors = [
-            (By.XPATH, "//div[contains(@class, 'srp-job-tuple')]"),
-            (By.XPATH, "//article[contains(@class, 'jobTuple')]"),
-            (By.XPATH, "//div[contains(@class, 'jobTuple')]")
+            (By.XPATH, "//div[contains(@class, 'srp-job-tuple') or contains(@class, 'srp-jobtuple-wrapper') or contains(@class, 'cust-job-tuple') or contains(@class, 'custTuple')]"),
+            (By.XPATH, "//article[contains(@class, 'jobTuple') or contains(@class, 'job-tuple') or contains(@class, 'srp-jobtuple-wrapper')]"),
+            (By.XPATH, "//article"),
+            (By.XPATH, "//div[contains(@class, 'jobTuple') or contains(@class, 'custTuple')]")
         ]
         
         for by, val in card_selectors:
@@ -166,20 +167,40 @@ def run_naukri_loop(max_pages=5):
         # Iterate over cards
         for idx, card in enumerate(job_cards):
             try:
-                # Extract details
-                title_el = card.find_element(By.XPATH, ".//a[contains(@class, 'title') or contains(@class, 'job-title')]")
+                # Extract Title & Link (with robust fallbacks)
+                title_el = None
+                for selector in [
+                    (By.XPATH, ".//a[contains(@class, 'title') or contains(@class, 'job-title') or contains(@class, 'jobTupleTitle')]"),
+                    (By.XPATH, ".//a[contains(@href, '/job-listings')]"),
+                    (By.XPATH, ".//a")
+                ]:
+                    try:
+                        title_el = card.find_element(*selector)
+                        if title_el:
+                            break
+                    except Exception:
+                        pass
+                
+                if not title_el:
+                    print_lg(f"Could not extract title for card {idx}. Skipping.")
+                    continue
+                    
                 title = title_el.text.strip()
                 job_url = title_el.get_attribute("href")
                 
-                # Extract Company
+                # Extract Company (with robust fallbacks)
                 company = "Unknown Company"
-                try:
-                    comp_el = card.find_element(By.XPATH, ".//a[contains(@class, 'comp-name') or contains(@class, 'companyName')]")
-                    company = comp_el.text.strip()
-                except Exception:
+                comp_selectors = [
+                    (By.XPATH, ".//a[contains(@class, 'comp-name') or contains(@class, 'companyName') or contains(@class, 'compName')]"),
+                    (By.XPATH, ".//div[contains(@class, 'comp-name') or contains(@class, 'companyName') or contains(@class, 'compName')]"),
+                    (By.XPATH, ".//span[contains(@class, 'companyName')]")
+                ]
+                for selector in comp_selectors:
                     try:
-                        comp_el = card.find_element(By.XPATH, ".//div[contains(@class, 'comp-name')]")
-                        company = comp_el.text.strip()
+                        comp_el = card.find_element(*selector)
+                        if comp_el:
+                            company = comp_el.text.strip()
+                            break
                     except Exception:
                         pass
                 

@@ -32,6 +32,7 @@ def make_directories(paths: list[str]) -> None:
             print(f'Error while creating directory "{path}": ', e)
 
 def get_default_temp_profile() -> str:
+    # Thanks to https://github.com/vinodbavage31 for suggestion!
     home = pathlib.Path.home()
     if sys.platform.startswith('win'):
         return "C:\\temp\\naukri-job-apply-profile"

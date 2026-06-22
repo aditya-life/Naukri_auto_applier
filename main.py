@@ -25,6 +25,8 @@ def main():
     
     try:
         # Check authentication status and log in if necessary
+        driver.get("https://www.naukri.com/nlogin/login")
+        time.sleep(3)
         if not is_logged_in_naukri():
             print_lg("Not logged in. Starting auto-login flow...")
             login_naukri()

@@ -20,3 +20,6 @@ country = "India"
 gender = "Male"
 disability_status = "No"
 veteran_status = "No"
+
+# Resume file path on your Desktop
+default_resume_path = "/Users/aditya/Desktop/Aditya_CV.pdf"

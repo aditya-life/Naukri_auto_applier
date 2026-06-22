@@ -18,7 +18,8 @@ click_gap = 1
 stealth_mode = True
 run_in_background = False
 disable_extensions = False
-safe_mode = False
+# Safe mode - opens Chrome using guest profile or if you have multiple profiles in browser. This will open chrome in guest profile!
+safe_mode = True                    # True or False, Note: True or False are case-sensitive
 
 # Search Configuration
 # Job search queries to loop through
