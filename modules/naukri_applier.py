@@ -16,7 +16,8 @@ from selenium.common.exceptions import NoSuchElementException, WebDriverExceptio
 
 from config.naukri_settings import (
     file_name, failed_file_name, click_gap, experience_years,
-    enable_resume_matching, resume_match_threshold, resume_keywords, resume_raw_text
+    enable_resume_matching, resume_match_threshold, resume_keywords, resume_raw_text,
+    use_naukri_official_match, require_keyskills_match, require_experience_match, require_location_match
 )
 from modules.chrome_launcher import driver, wait, actions
 from modules.utilities import print_lg, buffer
@@ -332,6 +333,51 @@ def get_job_description_text(driver):
         pass
 
     return ""
+
+def extract_naukri_match_scorecard(driver):
+    """
+    Parses Naukri's official match score widget.
+    Returns: dict with match statuses: e.g. {'keyskills': True, 'location': False, 'experience': True}
+    """
+    scorecard = {
+        'keyskills': False,
+        'location': False,
+        'experience': False
+    }
+    
+    try:
+        # Locate the match score container
+        containers = driver.find_elements(By.XPATH, "//*[contains(@class, 'match-score') or contains(@class, 'MatchScore') or contains(@class, 'styles_JDC__match-score')]")
+        if not containers:
+            return None # Indicator that widget was not found
+            
+        container = containers[0]
+        # Find all detail blocks
+        items = container.find_elements(By.XPATH, ".//div[contains(@class, 'details') or contains(@class, 'styles_MS__details')]")
+        
+        for item in items:
+            text = item.text.strip().lower()
+            # Check if this item has the check circle icon
+            has_check = False
+            try:
+                # Look for the <i> tag with class containing check_circle or check
+                icons = item.find_elements(By.XPATH, ".//i[contains(@class, 'check') or contains(@class, 'circle')]")
+                if icons:
+                    has_check = True
+            except Exception:
+                pass
+                
+            if "keyskill" in text:
+                scorecard['keyskills'] = has_check
+            elif "location" in text:
+                scorecard['location'] = has_check
+            elif "experience" in text:
+                scorecard['experience'] = has_check
+                
+        return scorecard
+    except Exception as e:
+        print_lg(f"Error parsing Naukri scorecard: {e}")
+        return None
 
 def search_naukri_jobs(keyword: str, location: str) -> None:
     '''
@@ -890,23 +936,59 @@ def apply_to_current_job(job_id, title, company, job_url):
         # Check resume matching suitability before applying
         if enable_resume_matching:
             print_lg(f"Analyzing job description suitability for: {title} at {company}...")
-            jd_text = get_job_description_text(driver)
-            if not jd_text:
-                print_lg("Could not extract job description from page. Skipping match calculation and proceeding to apply by default.")
-            else:
-                resume_text = get_resume_text()
-                is_suitable, score, kw_score, cos_score = check_job_suitability(
-                    jd_text, resume_text, resume_keywords, resume_match_threshold
-                )
-                print_lg(f"Resume Match Score: {score}% (Threshold: {resume_match_threshold}%)")
-                print_lg(f"  - Keyword match: {kw_score}%")
-                print_lg(f"  - Semantic match: {cos_score}%")
+            
+            # Try using Naukri's official match scorecard first if enabled
+            use_official = False
+            try:
+                use_official = use_naukri_official_match
+            except Exception:
+                use_official = False
                 
-                if not is_suitable:
-                    print_lg(f"Skipping job: match score {score}% is below threshold {resume_match_threshold}%.")
-                    save_applied_job(job_id, title, company, job_url, f"Skipped (Low Match: {score}%)")
-                    return
-                print_lg(f"Suitable job! Match score {score}% is at or above threshold {resume_match_threshold}%. Proceeding to apply.")
+            if use_official:
+                print_lg("Using Naukri's official match scorecard for verification...")
+                scorecard = extract_naukri_match_scorecard(driver)
+                if scorecard is None:
+                    print_lg("Naukri official match scorecard widget not found on page. Falling back to local resume matching.")
+                    use_official = False # Fall back to local TF-IDF match
+                else:
+                    print_lg(f"Naukri Scorecard: Keyskills Match={scorecard['keyskills']}, Location Match={scorecard['location']}, Experience Match={scorecard['experience']}")
+                    
+                    # Verify requirements
+                    fail_reasons = []
+                    if require_keyskills_match and not scorecard['keyskills']:
+                        fail_reasons.append("Keyskills mismatch")
+                    if require_experience_match and not scorecard['experience']:
+                        fail_reasons.append("Experience mismatch")
+                    if require_location_match and not scorecard['location']:
+                        fail_reasons.append("Location mismatch")
+                        
+                    if fail_reasons:
+                        reason_str = ", ".join(fail_reasons)
+                        print_lg(f"Skipping job: Failed Naukri official match requirements ({reason_str}).")
+                        save_applied_job(job_id, title, company, job_url, f"Skipped (Naukri Match: {reason_str})")
+                        return
+                    else:
+                        print_lg("Naukri official match requirements satisfied! Proceeding to apply.")
+                        
+            # If not using official match, or if official match fallback was triggered
+            if not use_official:
+                jd_text = get_job_description_text(driver)
+                if not jd_text:
+                    print_lg("Could not extract job description from page. Skipping match calculation and proceeding to apply by default.")
+                else:
+                    resume_text = get_resume_text()
+                    is_suitable, score, kw_score, cos_score = check_job_suitability(
+                        jd_text, resume_text, resume_keywords, resume_match_threshold
+                    )
+                    print_lg(f"Resume Match Score: {score}% (Threshold: {resume_match_threshold}%)")
+                    print_lg(f"  - Keyword match: {kw_score}%")
+                    print_lg(f"  - Semantic match: {cos_score}%")
+                    
+                    if not is_suitable:
+                        print_lg(f"Skipping job: match score {score}% is below threshold {resume_match_threshold}%.")
+                        save_applied_job(job_id, title, company, job_url, f"Skipped (Low Match: {score}%)")
+                        return
+                    print_lg(f"Suitable job! Match score {score}% is at or above threshold {resume_match_threshold}%. Proceeding to apply.")
         # Check if the page contains a direct Apply button
         apply_btn = None
         apply_selectors = [

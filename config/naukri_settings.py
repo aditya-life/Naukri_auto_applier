@@ -59,7 +59,8 @@ ai_provider = "gemini" # "openai", "gemini", "deepseek"
 enable_resume_matching = True
 
 # Minimum match percentage required to apply for the job (0 to 100)
-resume_match_threshold = 60
+# Updated to 50% as requested by the user
+resume_match_threshold = 50
 
 # Resume key technical skills/keywords for keyword-overlap calculations.
 # (Highly recommended: list tools, programming languages, and certifications you have)
@@ -77,3 +78,16 @@ IT Support Engineer & Service Desk Specialist
 Phone: YOUR_PHONE_NUMBER | Email: aditya12186@gmail.com
 Skills: L1 Support, L2 Support, Desktop Support, Windows, MacOS, Office 365, Outlook configuration, Active Directory, Troubleshooting hardware and software, ITSM Ticketing tools, Incident Management, Customer Support, ITIL guidelines.
 """
+
+# ==============================================================================
+# Naukri Official Scorecard Match Settings
+# ==============================================================================
+# Set to True to use Naukri.com's own matching scorecard displayed on the page.
+# If True, it will bypass our local resume similarity check and use Naukri's check instead.
+use_naukri_official_match = True
+
+# Match requirements if using Naukri's official match (True or False)
+# If True, the job will only be applied to if Naukri says that specific field is a match.
+require_keyskills_match = True       # Must match key skills according to Naukri
+require_experience_match = False     # Must match experience according to Naukri
+require_location_match = False       # Must match location according to Naukri
