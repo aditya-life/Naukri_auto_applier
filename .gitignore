@@ -8,6 +8,7 @@ __pycache__/
 
 # User configurations
 config/auth.py
+config/personal.py
 
 # Local logs and output excels
 logs/

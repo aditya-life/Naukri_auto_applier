@@ -14,9 +14,18 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import NoSuchElementException, WebDriverException, TimeoutException
 
-from config.naukri_settings import file_name, failed_file_name, click_gap, experience_years
+from config.naukri_settings import (
+    file_name, failed_file_name, click_gap, experience_years,
+    enable_resume_matching, resume_match_threshold, resume_keywords, resume_raw_text
+)
 from modules.chrome_launcher import driver, wait, actions
 from modules.utilities import print_lg, buffer
+
+# Import default_resume_path from config.personal if available
+try:
+    from config.personal import default_resume_path
+except ImportError:
+    default_resume_path = ""
 
 # In-memory set of applied job IDs to avoid duplicates
 applied_job_ids = set()
@@ -35,16 +44,29 @@ def load_applied_history():
 
 def save_applied_job(job_id, title, company, job_url, status):
     global applied_job_ids
-    applied_job_ids.add(job_id)
+    if status == "Applied":
+        applied_job_ids.add(job_id)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     target_csv = file_name if status == "Applied" else failed_file_name
+    consolidated_csv = "all excels/naukri_all_applications_track.csv"
     
     try:
         with open(target_csv, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow([job_id, title, company, job_url, status, now])
     except Exception as e:
-        print_lg(f"Error saving job to csv: {e}")
+        print_lg(f"Error saving job to specific csv: {e}")
+
+    try:
+        import os
+        write_header = not os.path.exists(consolidated_csv) or os.path.getsize(consolidated_csv) == 0
+        with open(consolidated_csv, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow(["Job ID", "Job Title", "Company", "Job URL", "Status", "Timestamp"])
+            writer.writerow([job_id, title, company, job_url, status, now])
+    except Exception as e:
+        print_lg(f"Error saving job to consolidated csv: {e}")
 
 import re
 
@@ -78,29 +100,455 @@ def is_experience_suitable(exp_text, user_exp=4):
             return False
     return True
 
+def extract_text_from_pdf(pdf_path):
+    """
+    Extracts raw text content from a PDF file using pypdf or PyPDF2 if installed.
+    """
+    try:
+        import os
+        if not os.path.exists(pdf_path):
+            return None
+            
+        # Try pypdf first (modern standard)
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(pdf_path)
+            text = ""
+            for page in reader.pages:
+                t = page.extract_text()
+                if t:
+                    text += t + "\n"
+            if text.strip():
+                return text.strip()
+        except ImportError:
+            pass
+            
+        # Try PyPDF2 as fallback
+        try:
+            import PyPDF2
+            reader = PyPDF2.PdfReader(pdf_path)
+            text = ""
+            for page in reader.pages:
+                t = page.extract_text()
+                if t:
+                    text += t + "\n"
+            if text.strip():
+                return text.strip()
+        except ImportError:
+            pass
+    except Exception as e:
+        print_lg(f"Error reading PDF {pdf_path}: {e}")
+    return None
+
+cached_resume_text = None
+
+def get_resume_text():
+    """
+    Retrieves the resume text. Attempts to parse the PDF file at default_resume_path first.
+    Falls back to resume_raw_text configured in settings if PDF parsing fails or is unconfigured.
+    """
+    global cached_resume_text
+    if cached_resume_text is not None:
+        return cached_resume_text
+        
+    try:
+        import os
+        if default_resume_path and not default_resume_path.startswith("/path/to") and os.path.exists(default_resume_path):
+            print_lg(f"Parsing PDF resume from path: {default_resume_path}")
+            pdf_text = extract_text_from_pdf(default_resume_path)
+            if pdf_text:
+                print_lg("Successfully extracted text from PDF resume.")
+                cached_resume_text = pdf_text
+                return cached_resume_text
+            else:
+                print_lg("PDF extraction returned empty text. Falling back to raw resume text.")
+    except Exception as e:
+        print_lg(f"Could not parse PDF resume: {e}. Using raw resume text.")
+        
+    print_lg("Using raw resume text from config/naukri_settings.py.")
+    cached_resume_text = resume_raw_text
+    return cached_resume_text
+
+def calculate_cosine_similarity(text1, text2):
+    """
+    Calculates term-frequency cosine similarity between two texts.
+    Uses basic tokenization and removes standard English stop words.
+    """
+    stop_words = {
+        'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you', "you're", "you've", "you'll", "you'd",
+        'your', 'yours', 'yourself', 'yourselves', 'he', 'him', 'his', 'himself', 'she', "she's", 'her', 'hers',
+        'herself', 'it', "it's", 'its', 'itself', 'they', 'them', 'their', 'theirs', 'themselves', 'what', 'which',
+        'who', 'whom', 'this', 'that', "that'll", 'these', 'those', 'am', 'is', 'are', 'was', 'were', 'be', 'been',
+        'being', 'have', 'has', 'had', 'having', 'do', 'does', 'did', 'doing', 'a', 'an', 'the', 'and', 'but', 'if',
+        'or', 'because', 'as', 'until', 'while', 'of', 'at', 'by', 'for', 'with', 'about', 'against', 'between',
+        'into', 'through', 'during', 'before', 'after', 'above', 'below', 'to', 'from', 'up', 'down', 'in', 'out',
+        'on', 'off', 'over', 'under', 'again', 'further', 'then', 'once', 'here', 'there', 'when', 'where', 'why',
+        'how', 'all', 'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not',
+        'only', 'own', 'same', 'so', 'than', 'too', 'very', 's', 't', 'can', 'will', 'just', 'don', "don't", 'should',
+        "should've", 'now', 'd', 'll', 'm', 'o', 're', 've', 'y', 'ain', 'aren', "aren't", 'couldn', "couldn't",
+        'didn', "didn't", 'doesn', "doesn't", 'hadn', "hadn't", 'hasn', "hasn't", 'haven', "haven't", 'isn', "isn't",
+        'ma', 'mightn', "mightn't", 'mustn', "mustn't", 'needn', "needn't", 'shan', "shan't", 'shouldn', "shouldn't",
+        'wasn', "wasn't", 'weren', "weren't", 'won', "won't", 'wouldn', "wouldn't"
+    }
+
+    def get_words(text):
+        words = re.findall(r'\b[a-zA-Z0-9_]+\b', text.lower())
+        return [w for w in words if w not in stop_words and len(w) > 1]
+
+    words1 = get_words(text1)
+    words2 = get_words(text2)
+
+    if not words1 or not words2:
+        return 0.0
+
+    freq1 = {}
+    for w in words1:
+        freq1[w] = freq1.get(w, 0) + 1
+
+    freq2 = {}
+    for w in words2:
+        freq2[w] = freq2.get(w, 0) + 1
+
+    vocab = set(freq1.keys()) | set(freq2.keys())
+
+    dot_product = 0.0
+    mag1 = 0.0
+    mag2 = 0.0
+
+    for w in vocab:
+        val1 = freq1.get(w, 0)
+        val2 = freq2.get(w, 0)
+        dot_product += val1 * val2
+        mag1 += val1 * val1
+        mag2 += val2 * val2
+
+    if mag1 == 0 or mag2 == 0:
+        return 0.0
+
+    import math
+    return dot_product / (math.sqrt(mag1) * math.sqrt(mag2))
+
+def calculate_keyword_match_ratio(jd_text, keywords):
+    """
+    Calculates the ratio of configured keywords found in the job description.
+    """
+    if not keywords:
+        return None
+        
+    jd_lower = jd_text.lower()
+    matched_count = 0
+    for kw in keywords:
+        pattern = r'\b' + re.escape(kw.lower()) + r'\b'
+        if re.search(pattern, jd_lower):
+            matched_count += 1
+    return matched_count / len(keywords)
+
+def check_job_suitability(jd_text, resume_text, keywords, threshold):
+    """
+    Evaluates suitability by combining keyword-matching and term-frequency cosine similarity.
+    Returns: (is_suitable, combined_score_percentage, keyword_score_percentage, cosine_score_percentage)
+    """
+    if not jd_text or not resume_text:
+        return True, 100.0, 100.0, 100.0
+        
+    cosine_sim = calculate_cosine_similarity(resume_text, jd_text)
+    # Calibrate cosine similarity: map 0.0 -> 0%, 0.40 -> 100%
+    scaled_cosine = min(100.0, (cosine_sim / 0.40) * 100.0)
+    
+    kw_ratio = calculate_keyword_match_ratio(jd_text, keywords)
+    
+    if kw_ratio is None:
+        combined_score = scaled_cosine
+        kw_percentage = 0.0
+    else:
+        kw_percentage = kw_ratio * 100.0
+        # Weighted score: 50% keyword matching, 50% overall content similarity
+        combined_score = (0.5 * kw_percentage) + (0.5 * scaled_cosine)
+        
+    combined_score = round(combined_score, 2)
+    kw_percentage = round(kw_percentage, 2)
+    scaled_cosine = round(scaled_cosine, 2)
+    
+    is_suitable = combined_score >= threshold
+    return is_suitable, combined_score, kw_percentage, scaled_cosine
+
+def get_job_description_text(driver):
+    """
+    Extracts the job description text content from Naukri's job details page.
+    Utilizes a robust variety of selectors and fallbacks to handle dynamic layout changes.
+    """
+    # 1. Broad set of standard CSS/class/XPath selectors
+    selectors = [
+        (By.XPATH, "//section[contains(@class, 'job-desc')]"),
+        (By.XPATH, "//div[contains(@class, 'job-desc')]"),
+        (By.XPATH, "//div[contains(@class, 'job-description')]"),
+        (By.XPATH, "//div[contains(@class, 'jd-desc')]"),
+        (By.XPATH, "//div[contains(@class, 'description')]"),
+        (By.XPATH, "//*[contains(@class, 'styles_jd-description')]"),
+        (By.XPATH, "//section[contains(@class, 'description')]"),
+        (By.ID, "job-desc"),
+        (By.CLASS_NAME, "job-desc")
+    ]
+    for by, val in selectors:
+        try:
+            element = driver.find_element(by, val)
+            if element and element.is_displayed():
+                text = element.text.strip()
+                if len(text) > 100:
+                    return text
+        except Exception:
+            pass
+
+    # 2. Match based on typical section headings
+    headings = [
+        "//h2[contains(text(), 'Job description') or contains(text(), 'Job Description')]",
+        "//h3[contains(text(), 'Job description') or contains(text(), 'Job Description')]",
+        "//div[contains(text(), 'Job description') or contains(text(), 'Job Description')]",
+        "//span[contains(text(), 'Job description') or contains(text(), 'Job Description')]"
+    ]
+    for h_xpath in headings:
+        try:
+            element = driver.find_element(By.XPATH, h_xpath)
+            if element:
+                parent = element.find_element(By.XPATH, "..")
+                if parent:
+                    text = parent.text.strip()
+                    if len(text) > 100:
+                        return text
+        except Exception:
+            pass
+
+    # 3. Fallback: Parse body content via regex to isolate description block
+    try:
+        body_text = driver.find_element(By.TAG_NAME, "body").text
+        jd_match = re.search(r'(?i)job\s+description(.*?)(about\s+company|education|key\s+skills|role|industry|functional\s+area|$)', body_text, re.DOTALL)
+        if jd_match:
+            text = jd_match.group(1).strip()
+            if len(text) > 100:
+                return text
+        if len(body_text) > 200:
+            return body_text[:5000]
+    except Exception:
+        pass
+
+    return ""
+
 def search_naukri_jobs(keyword: str, location: str) -> None:
     '''
     Navigates to Naukri search results using formatted query parameters sorted by date
     '''
-    encoded_keyword = urllib.parse.quote(keyword)
+    import re
+    def get_seo_slug(text: str) -> str:
+        text = text.lower().strip()
+        text = re.sub(r'[^a-z0-9\s-]', '', text)
+        text = re.sub(r'[\s-]+', '-', text)
+        return text.strip('-')
+
+    keyword_slug = get_seo_slug(keyword)
+    location_str = location.strip().lower()
+    if location_str == "india":
+        location_str = ""
     
-    if location.strip():
-        encoded_location = urllib.parse.quote(location.strip().lower())
-        search_url = f"https://www.naukri.com/jobs-in-{encoded_location}?k={encoded_keyword}"
+    if location_str:
+        location_slug = get_seo_slug(location)
+        search_url = f"https://www.naukri.com/{keyword_slug}-jobs-in-{location_slug}"
     else:
-        search_url = f"https://www.naukri.com/jobs?k={encoded_keyword}"
+        search_url = f"https://www.naukri.com/{keyword_slug}-jobs"
         
+    params = []
     if experience_years > 0:
-        search_url += f"&experience={experience_years}"
+        params.append(f"experience={experience_years}")
         
     # Sort by date (freshest jobs first)
-    search_url += "&sort=dd"
+    params.append("sort=dd")
+    
+    if params:
+        search_url += "?" + "&".join(params)
 
-    print_lg(f"\n>-> Searching Naukri for '{keyword}' in '{location}' (Exp: {experience_years} years) -> URL: {search_url}")
-    driver.get(search_url)
-    time.sleep(3)
+    # For multiple keywords containing commas, we bypass SEO page and go directly to search input typing
+    # because Naukri doesn't have an SEO page for multiple combined designation names.
+    if "," in keyword:
+        print_lg(f"\nMultiple designations detected in keyword: '{keyword}'. Skipping SEO URL and using UI typing...")
+        is_invalid_page = True
+        job_tuples = []
+    else:
+        print_lg(f"\n>-> Searching Naukri for '{keyword}' in '{location}' (Exp: {experience_years} years) -> URL: {search_url}")
+        driver.get(search_url)
+        time.sleep(3)
+
+        # Check if page loaded successfully, otherwise fall back to generic query URL
+        page_content = driver.page_source.lower()
+        is_invalid_page = "something went wrong" in page_content or "page not found" in page_content or "404" in page_content
+        
+        # Check if there are any job card elements
+        job_tuples = []
+        try:
+            job_tuples = driver.find_elements(By.XPATH, "//div[contains(@class, 'srp-job-tuple') or contains(@class, 'srp-jobtuple-wrapper') or contains(@class, 'cust-job-tuple') or contains(@class, 'custTuple')]")
+        except Exception:
+            pass
+
+    if is_invalid_page or not job_tuples:
+        print_lg(f"SEO URL failed or bypassed. Typing search keyword '{keyword}' directly in search UI to bypass space/comma encoding bugs...")
+        
+        # Navigate to a clean base page without query parameters to avoid Cloudflare/bot block
+        if location.strip() and location.strip().lower() != "india":
+            location_slug = get_seo_slug(location)
+            base_url = f"https://www.naukri.com/jobs-in-{location_slug}"
+        else:
+            base_url = "https://www.naukri.com/jobs"
+        
+        print_lg(f"Navigating to clean base search URL: {base_url}")
+        driver.get(base_url)
+        time.sleep(5)
+        
+        # Locate search input box, clear it, type the keyword and submit
+        try:
+            search_input = wait.until(EC.presence_of_element_located((
+                By.XPATH, "//input[contains(@class, 'suggestor-input') or contains(@placeholder, 'keyword') or contains(@placeholder, 'skills')]"
+            )))
+            # Focus and click via Javascript to prevent element click interception
+            driver.execute_script("arguments[0].focus();", search_input)
+            driver.execute_script("arguments[0].click();", search_input)
+            time.sleep(0.5)
+            
+            from selenium.webdriver.common.keys import Keys
+            import sys
+            search_input.send_keys(Keys.COMMAND if sys.platform == 'darwin' else Keys.CONTROL, 'a')
+            search_input.send_keys(Keys.BACKSPACE)
+            time.sleep(0.5)
+            
+            # Type keyword (keeps spaces and commas literal, preventing %20 and %2C bugs)
+            search_input.send_keys(keyword)
+            time.sleep(1)
+            
+            # Locate search button
+            search_button = None
+            search_btn_selectors = [
+                (By.XPATH, "//button[contains(@class, 'qsbSubmit') or contains(text(), 'Search')]"),
+                (By.XPATH, "//span[contains(@class, 'qsbSubmit') or contains(text(), 'Search')]"),
+                (By.XPATH, "//div[contains(@class, 'qsbSubmit') or contains(text(), 'Search')]"),
+                (By.CLASS_NAME, "qsbSubmit")
+            ]
+            for by, val in search_btn_selectors:
+                try:
+                    btn = driver.find_element(by, val)
+                    if btn.is_displayed() and btn.is_enabled():
+                        search_button = btn
+                        break
+                except Exception:
+                    pass
+            
+            if search_button:
+                search_button.click()
+            else:
+                search_input.send_keys(Keys.ENTER)
+                
+            print_lg("Search submitted successfully via UI input.")
+            time.sleep(5)
+        except Exception as se:
+            print_lg(f"Error typing search keyword via UI: {se}. Trying URL parameter fallback (with '+' for spaces).")
+            # If UI typing fails, we fall back to URL parameter with + replacing space
+            encoded_keyword = urllib.parse.quote_plus(keyword)
+            if location.strip() and location.strip().lower() != "india":
+                encoded_location = urllib.parse.quote_plus(location.strip().lower())
+                search_url = f"https://www.naukri.com/jobs-in-{encoded_location}?k={encoded_keyword}"
+            else:
+                search_url = f"https://www.naukri.com/jobs?k={encoded_keyword}"
+                
+            if experience_years > 0:
+                search_url += f"&experience={experience_years}"
+            search_url += "&sort=dd"
+            
+            print_lg(f"Navigating to URL Fallback: {search_url}")
+            driver.get(search_url)
+            time.sleep(3)
+
+    # Try to apply sort by date in the UI to ensure it is sorted by Date
+    try:
+        print_lg("Attempting to apply Sort by Date filter via UI...")
+        time.sleep(2)
+        
+        # Click the sort dropdown container
+        sort_dropdown = None
+        sort_selectors = [
+            (By.XPATH, "//div[contains(@class, 'sort-dropdown') or contains(@class, 'sort-container') or contains(@class, 'dropdown')][.//*[contains(text(), 'Sort by') or contains(text(), 'Recommended') or contains(text(), 'Date')]]"),
+            (By.XPATH, "//*[contains(text(), 'Sort by') or contains(text(), 'Recommended')]"),
+            (By.XPATH, "//div[contains(@class, 'sort-grid')]"),
+            (By.XPATH, "//span[contains(text(), 'Sort by')]")
+        ]
+        for by, val in sort_selectors:
+            try:
+                elements = driver.find_elements(by, val)
+                for el in elements:
+                    if el.is_displayed() and el.is_enabled():
+                        sort_dropdown = el
+                        break
+                if sort_dropdown:
+                    break
+            except Exception:
+                pass
+
+        if sort_dropdown:
+            print_lg(f"Found sort dropdown element: {sort_dropdown.text}. Clicking it...")
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sort_dropdown)
+            time.sleep(0.5)
+            driver.execute_script("arguments[0].click();", sort_dropdown)
+            time.sleep(1.5)
+            
+            # Click the 'Date' option inside the opened dropdown menu
+            date_option = None
+            date_selectors = [
+                (By.XPATH, "//ul[contains(@class, 'dropdown') or contains(@class, 'list') or contains(@class, 'options')]//li[contains(text(), 'Date') or contains(text(), 'Freshness')]"),
+                (By.XPATH, "//span[text()='Date' or text()='Freshness']"),
+                (By.XPATH, "//li[text()='Date' or text()='Freshness' or contains(text(), 'Date')]"),
+                (By.XPATH, "//*[contains(text(), 'Date') and not(self::span[contains(@class, 'exp')])]"),
+            ]
+            for by, val in date_selectors:
+                try:
+                    elements = driver.find_elements(by, val)
+                    for el in elements:
+                        if el.is_displayed() and el.is_enabled():
+                            date_option = el
+                            break
+                    if date_option:
+                        break
+                except Exception:
+                    pass
+            
+            if date_option:
+                print_lg(f"Found date sort option: '{date_option.text}'. Clicking it...")
+                driver.execute_script("arguments[0].click();", date_option)
+                time.sleep(3)
+                print_lg("Sorting by Date applied successfully.")
+            else:
+                print_lg("Could not locate 'Date' option in expanded sort dropdown.")
+        else:
+            print_lg("Could not locate Sort by dropdown container on page.")
+    except Exception as e:
+        print_lg(f"Error applying Sort by Date filter: {e}")
 
 def get_question_text(driver, element):
+    # Check if inside chatbot overlay or container
+    try:
+        is_chat = False
+        curr = element
+        for _ in range(5):
+            if curr:
+                cls = curr.get_attribute("class") or ""
+                id_val = curr.get_attribute("id") or ""
+                if "chat" in cls.lower() or "chat" in id_val.lower():
+                    is_chat = True
+                    break
+                curr = curr.find_element(By.XPATH, "./parent::*")
+            else:
+                break
+        if is_chat:
+            chat_bubbles = driver.find_elements(By.XPATH, "//div[contains(@class, 'msg') or contains(@class, 'bubble') or contains(@class, 'chat') or contains(@class, 'question')] | //span[contains(@class, 'msg') or contains(@class, 'bubble') or contains(@class, 'chat') or contains(@class, 'question')]")
+            if chat_bubbles:
+                return chat_bubbles[-1].text.strip()
+    except Exception:
+        pass
+
     elem_id = element.get_attribute("id")
     if elem_id:
         try:
@@ -190,24 +638,105 @@ def get_answer_for_question(question_text):
         
     return ""
 
+def is_chatbot_active(driver) -> bool:
+    try:
+        container = driver.find_element(By.ID, "chatbot-container")
+        if container.is_displayed() and container.find_elements(By.XPATH, ".//*"):
+            return True
+    except Exception:
+        pass
+    
+    overlay_selectors = [
+        "//div[contains(@class, 'chatbot_Overlay')]",
+        "//div[contains(@class, 'chatbot-container')]",
+        "//div[contains(@id, 'chatbot')]",
+        "//div[contains(@class, 'modal-') or contains(@class, 'drawer-')]",
+        "//div[contains(@class, 'Overlay') and not(contains(@id, 'save')) and not(contains(@class, 'save'))]"
+    ]
+    for sel in overlay_selectors:
+        try:
+            elements = driver.find_elements(By.XPATH, sel)
+            for el in elements:
+                if el.is_displayed():
+                    cls = el.get_attribute("class") or ""
+                    id_val = el.get_attribute("id") or ""
+                    if "header" not in cls.lower() and "header" not in id_val.lower():
+                        return True
+        except Exception:
+            pass
+    return False
+
 def fill_naukri_questions(driver):
     '''
     Detects and fills dynamic screening forms or chatbot questions on Naukri
     '''
+    # Check if chatbot is active. If on job detail page and no chatbot is active, do not run!
+    current_url = driver.current_url.lower()
+    if "job-listings" in current_url and not is_chatbot_active(driver):
+        return
+
     max_steps = 10
     step = 0
     time.sleep(2) # Wait for potential popup/modal to render
     
     while step < max_steps:
+        # Find active overlay container
+        overlay = None
+        overlay_selectors = [
+            "//div[contains(@class, 'chatbot_Overlay')]",
+            "//div[contains(@class, 'chatbot-container')]",
+            "//div[contains(@id, 'chatbot')]",
+            "//div[contains(@class, 'modal')]",
+            "//div[contains(@class, 'drawer')]",
+            "//div[contains(@class, 'Overlay') and not(contains(@id, 'save')) and not(contains(@class, 'save'))]"
+        ]
+        for sel in overlay_selectors:
+            try:
+                elements = driver.find_elements(By.XPATH, sel)
+                for el in elements:
+                    if el.is_displayed():
+                        overlay = el
+                        break
+                if overlay:
+                    break
+            except Exception:
+                pass
+
+        if not overlay:
+            # Check if there is any visible form/chat element on the page
+            try:
+                inputs = driver.find_elements(By.XPATH, "//input[@type='text' or @type='number' or not(@type)] | //textarea")
+                visible_inputs = [el for el in inputs if el.is_displayed() and el.is_enabled() and el.get_attribute("type") not in ["submit", "button", "hidden", "radio", "checkbox"]]
+                if not visible_inputs:
+                    break
+            except Exception:
+                break
+
         options_clicked = False
         try:
-            choice_elements = driver.find_elements(By.XPATH, "//*[contains(@class, 'chat') or contains(@class, 'drawer') or contains(@class, 'modal') or contains(@class, 'Overlay') or contains(@id, 'chat') or contains(@id, 'Overlay')]//*[self::button or self::span or self::label or self::li or self::div[contains(@class, 'option') or contains(@class, 'value') or contains(@class, 'item')]]")
+            # Locate options/choices inside the overlay or on the page
+            if overlay:
+                choice_elements = overlay.find_elements(By.XPATH, ".//button | .//span | .//label | .//li | .//div[contains(@class, 'option') or contains(@class, 'value') or contains(@class, 'item')]")
+            else:
+                choice_elements = driver.find_elements(By.XPATH, "//form//*[self::button or self::span or self::label or self::li or self::div[contains(@class, 'option') or contains(@class, 'value') or contains(@class, 'item')]]")
+                
             visible_choices = [el for el in choice_elements if el.is_displayed() and el.is_enabled() and el.text.strip()]
             
-            if visible_choices:
+            # Filter out choices that match navigation or unrelated actions
+            filtered_choices = []
+            for el in visible_choices:
+                txt = el.text.strip().lower()
+                if txt in ["save", "save job", "report", "similar jobs", "share"]:
+                    continue
+                filtered_choices.append(el)
+                
+            if filtered_choices:
                 question_text = ""
                 try:
-                    chat_bubbles = driver.find_elements(By.XPATH, "//div[contains(@class, 'msg') or contains(@class, 'bubble') or contains(@class, 'text') or contains(@class, 'question')]")
+                    if overlay:
+                        chat_bubbles = overlay.find_elements(By.XPATH, ".//div[contains(@class, 'msg') or contains(@class, 'bubble') or contains(@class, 'chat') or contains(@class, 'question')] | .//span[contains(@class, 'msg') or contains(@class, 'bubble') or contains(@class, 'chat') or contains(@class, 'question')]")
+                    else:
+                        chat_bubbles = driver.find_elements(By.XPATH, "//div[contains(@class, 'msg') or contains(@class, 'bubble') or contains(@class, 'chat') or contains(@class, 'question')] | //span[contains(@class, 'msg') or contains(@class, 'bubble') or contains(@class, 'chat') or contains(@class, 'question')]")
                     if chat_bubbles:
                         question_text = chat_bubbles[-1].text.strip()
                 except Exception:
@@ -218,27 +747,33 @@ def fill_naukri_questions(driver):
                 
                 expected_parts = [p.strip().lower() for p in expected_answer.split('|') if p.strip()]
                 clicked_choice = None
-                for choice in visible_choices:
-                    choice_txt = choice.text.strip().lower()
-                    if not choice_txt:
-                        continue
-                    
-                    matched = False
-                    for part in expected_parts:
-                        if part in choice_txt:
-                            matched = True
+                
+                if expected_parts:
+                    for choice in filtered_choices:
+                        choice_txt = choice.text.strip().lower()
+                        if not choice_txt:
+                            continue
+                        
+                        matched = False
+                        for part in expected_parts:
+                            if part in choice_txt:
+                                matched = True
+                                break
+                                
+                        if matched:
+                            print_lg(f"Found matching option: '{choice.text}'")
+                            driver.execute_script("arguments[0].click();", choice)
+                            clicked_choice = choice
                             break
-                            
-                    if matched:
-                        print_lg(f"Found matching option: '{choice.text}'")
-                        driver.execute_script("arguments[0].click();", choice)
-                        clicked_choice = choice
-                        break
                         
                 if not clicked_choice:
-                    if len(visible_choices) == 1 or "confirm" in question_text.lower() or "apply" in question_text.lower():
-                        driver.execute_script("arguments[0].click();", visible_choices[0])
-                        clicked_choice = visible_choices[0]
+                    for choice in filtered_choices:
+                        choice_txt = choice.text.strip().lower()
+                        if any(k in choice_txt for k in ["confirm", "apply", "yes", "agree", "accept", "submit"]):
+                            print_lg(f"Found fallback confirmation option: '{choice.text}'")
+                            driver.execute_script("arguments[0].click();", choice)
+                            clicked_choice = choice
+                            break
                         
                 if clicked_choice:
                     print_lg(f"Clicked option button: '{clicked_choice.text}'")
@@ -251,7 +786,11 @@ def fill_naukri_questions(driver):
 
         inputs_filled = False
         try:
-            input_elements = driver.find_elements(By.XPATH, "//input[@type='text' or @type='number' or not(@type)] | //textarea")
+            if overlay:
+                input_elements = overlay.find_elements(By.XPATH, ".//input[@type='text' or @type='number' or not(@type)] | .//textarea")
+            else:
+                input_elements = driver.find_elements(By.XPATH, "//input[@type='text' or @type='number' or not(@type)] | //textarea")
+                
             visible_inputs = [el for el in input_elements if el.is_displayed() and el.is_enabled() and el.get_attribute("type") not in ["submit", "button", "hidden", "radio", "checkbox"]]
             
             for inp in visible_inputs:
@@ -272,7 +811,11 @@ def fill_naukri_questions(driver):
                     inp.send_keys(expected_ans)
                     inputs_filled = True
                     
-            select_elements = driver.find_elements(By.XPATH, "//select")
+            if overlay:
+                select_elements = overlay.find_elements(By.XPATH, ".//select")
+            else:
+                select_elements = driver.find_elements(By.XPATH, "//select")
+                
             visible_selects = [el for el in select_elements if el.is_displayed() and el.is_enabled()]
             for sel in visible_selects:
                 question_txt = get_question_text(driver, sel)
@@ -295,16 +838,20 @@ def fill_naukri_questions(driver):
             
         if inputs_filled or options_clicked:
             try:
-                submit_selectors = [
-                    (By.XPATH, "//*[contains(@class, 'chat') or contains(@class, 'drawer') or contains(@class, 'modal') or contains(@class, 'Overlay') or contains(@id, 'chat')]//button[contains(normalize-space(.), 'Save') or contains(normalize-space(.), 'Submit') or contains(normalize-space(.), 'Continue') or contains(normalize-space(.), 'Send') or contains(normalize-space(.), 'Apply')]"),
-                    (By.XPATH, "//button[contains(@class, 'submit') or contains(@class, 'continue') or contains(text(), 'Submit') or contains(text(), 'Continue') or contains(text(), 'Apply') or contains(text(), 'Save')]"),
-                    (By.XPATH, "//input[@type='submit' or @value='Submit' or @value='Continue']"),
-                    (By.XPATH, "//button[contains(., 'Send') or contains(., 'Submit') or contains(., 'Apply')]")
-                ]
+                submit_selectors = []
+                if overlay:
+                    submit_selectors.append((By.XPATH, ".//button[contains(normalize-space(.), 'Save') or contains(normalize-space(.), 'Submit') or contains(normalize-space(.), 'Continue') or contains(normalize-space(.), 'Send') or contains(normalize-space(.), 'Apply')]"))
+                else:
+                    submit_selectors.extend([
+                        (By.XPATH, "//button[contains(@class, 'submit') or contains(@class, 'continue') or contains(text(), 'Submit') or contains(text(), 'Continue') or contains(text(), 'Apply') or contains(text(), 'Save')]"),
+                        (By.XPATH, "//input[@type='submit' or @value='Submit' or @value='Continue']"),
+                        (By.XPATH, "//button[contains(., 'Send') or contains(., 'Submit') or contains(., 'Apply')]")
+                    ])
+                
                 submit_btn = None
                 for by, val in submit_selectors:
                     try:
-                        elements = driver.find_elements(by, val)
+                        elements = overlay.find_elements(by, val) if overlay else driver.find_elements(by, val)
                         for el in elements:
                             if el.is_displayed() and el.is_enabled():
                                 submit_btn = el
@@ -329,6 +876,26 @@ def apply_to_current_job(job_id, title, company, job_url):
     Handles direct application inside a job detail page
     '''
     try:
+        # Check resume matching suitability before applying
+        if enable_resume_matching:
+            print_lg(f"Analyzing job description suitability for: {title} at {company}...")
+            jd_text = get_job_description_text(driver)
+            if not jd_text:
+                print_lg("Could not extract job description from page. Skipping match calculation and proceeding to apply by default.")
+            else:
+                resume_text = get_resume_text()
+                is_suitable, score, kw_score, cos_score = check_job_suitability(
+                    jd_text, resume_text, resume_keywords, resume_match_threshold
+                )
+                print_lg(f"Resume Match Score: {score}% (Threshold: {resume_match_threshold}%)")
+                print_lg(f"  - Keyword match: {kw_score}%")
+                print_lg(f"  - Semantic match: {cos_score}%")
+                
+                if not is_suitable:
+                    print_lg(f"Skipping job: match score {score}% is below threshold {resume_match_threshold}%.")
+                    save_applied_job(job_id, title, company, job_url, f"Skipped (Low Match: {score}%)")
+                    return
+                print_lg(f"Suitable job! Match score {score}% is at or above threshold {resume_match_threshold}%. Proceeding to apply.")
         # Check if the page contains a direct Apply button
         apply_btn = None
         apply_selectors = [
