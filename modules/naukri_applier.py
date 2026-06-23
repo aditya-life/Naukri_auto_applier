@@ -578,20 +578,27 @@ def get_question_text(driver, element):
     try:
         is_chat = False
         curr = element
-        for _ in range(5):
+        # Search up to 15 parent levels to cover nested custom chatbot overlays
+        for _ in range(15):
             if curr:
                 cls = curr.get_attribute("class") or ""
                 id_val = curr.get_attribute("id") or ""
                 if "chat" in cls.lower() or "chat" in id_val.lower():
                     is_chat = True
                     break
-                curr = curr.find_element(By.XPATH, "./parent::*")
+                try:
+                    curr = curr.find_element(By.XPATH, "./parent::*")
+                except Exception:
+                    break
             else:
                 break
         if is_chat:
-            chat_bubbles = driver.find_elements(By.XPATH, "//div[contains(@class, 'msg') or contains(@class, 'bubble') or contains(@class, 'chat') or contains(@class, 'question')] | //span[contains(@class, 'msg') or contains(@class, 'bubble') or contains(@class, 'chat') or contains(@class, 'question')]")
+            chat_bubbles = driver.find_elements(By.XPATH, "//div[contains(@class, 'msg') or contains(@class, 'bubble') or (contains(@class, 'chat') and not(contains(@class, 'chatbot_')) and not(contains(@class, 'chatbot-'))) or contains(@class, 'question')] | //span[contains(@class, 'msg') or contains(@class, 'bubble') or (contains(@class, 'chat') and not(contains(@class, 'chatbot_')) and not(contains(@class, 'chatbot-'))) or contains(@class, 'question')]")
             if chat_bubbles:
-                return chat_bubbles[-1].text.strip()
+                for b in reversed(chat_bubbles):
+                    txt = b.text.strip()
+                    if txt and len(txt) > 5 and not any(k in txt.lower() for k in ["thank you for showing interest", "answer all the recruiter"]):
+                        return txt
     except Exception:
         pass
 
@@ -623,9 +630,137 @@ def get_question_text(driver, element):
         
     return ""
 
+def get_ai_answer(question_text):
+    '''
+    Uses Gemini AI (or OpenAI/Deepseek depending on configuration) to analyze candidate's resume
+    and generate the most suitable response for the screening question.
+    '''
+    import requests
+    import os
+    try:
+        from config.auth import llm_api_key, llm_api_url, llm_model
+        from config.naukri_settings import ai_provider
+    except ImportError:
+        return ""
+        
+    resume_text = get_resume_text()
+    
+    # Get API key from config or environment variables
+    api_key = llm_api_key
+    if not api_key or api_key == "not-needed" or api_key == "YOUR_API_KEY_HERE":
+        if ai_provider == "gemini":
+            api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        elif ai_provider == "openai":
+            api_key = os.environ.get("OPENAI_API_KEY")
+        elif ai_provider == "deepseek":
+            api_key = os.environ.get("DEEPSEEK_API_KEY")
+            
+    if not api_key:
+        print_lg("AI API key not found in config/auth.py or environment. Falling back to rules.")
+        return ""
+        
+    system_prompt = f"""
+You are an AI assistant helping a candidate apply for jobs on Naukri.com.
+You will be given a screening question from a recruiter or chatbot, and the text of the candidate's resume.
+Your job is to answer the question accurately, professionally, and concisely using the candidate's resume.
+
+Candidate's Resume Content:
+---
+{resume_text}
+---
+
+Instructions:
+1. If the question has multiple choice options (like Yes/No, or experience options), return the option that best matches the candidate's background. If it's a Yes/No option and the candidate has relevant experience or skills, prefer 'Yes' (unless it's something they absolutely don't have, like a disability or mismatching gender/city).
+2. Keep the answer extremely brief. If it's a numeric answer (e.g. years of experience), return ONLY the number (e.g. "4"). If it's a text answer (e.g. current location or notice period), return only the brief value (e.g. "Noida" or "15 days").
+3. Do not add any conversational text or prefix (like "Here is the answer: " or "Based on your resume..."). Return ONLY the exact answer/value to be pasted in the input field.
+"""
+
+    user_prompt = f"Screening Question: {question_text}"
+    
+    try:
+        # Call Gemini API
+        if ai_provider == "gemini":
+            if "openai" in llm_api_url.lower():
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+                data = {
+                    "model": llm_model or "gemini-1.5-flash",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "temperature": 0.1
+                }
+                response = requests.post(f"{llm_api_url.rstrip('/')}/chat/completions", headers=headers, json=data, timeout=15)
+                if response.status_code == 200:
+                    return response.json()["choices"][0]["message"]["content"].strip()
+            else:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{llm_model or 'gemini-1.5-flash'}:generateContent?key={api_key}"
+                headers = {"Content-Type": "application/json"}
+                data = {
+                    "contents": [
+                        {
+                            "parts": [
+                                {"text": system_prompt + "\n\n" + user_prompt}
+                            ]
+                        }
+                    ],
+                    "generationConfig": {
+                        "temperature": 0.1
+                    }
+                }
+                response = requests.post(url, headers=headers, json=data, timeout=15)
+                if response.status_code == 200:
+                    return response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    
+        # Call OpenAI / Deepseek API
+        elif ai_provider in ["openai", "deepseek"]:
+            url = llm_api_url if llm_api_url and "openai" in llm_api_url.lower() else "https://api.openai.com/v1/"
+            if ai_provider == "deepseek":
+                url = "https://api.deepseek.com/v1/"
+                
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            data = {
+                "model": llm_model or ("gpt-4o-mini" if ai_provider == "openai" else "deepseek-chat"),
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.1
+            }
+            response = requests.post(f"{url.rstrip('/')}/chat/completions", headers=headers, json=data, timeout=15)
+            if response.status_code == 200:
+                return response.json()["choices"][0]["message"]["content"].strip()
+                
+        print_lg(f"AI API request failed (status {response.status_code}): {response.text}")
+    except Exception as e:
+        print_lg(f"Error calling AI API: {e}")
+        
+    return ""
+
 def get_answer_for_question(question_text):
+    # Try using Gemini AI if enabled in settings
+    try:
+        from config.naukri_settings import use_AI
+        if use_AI:
+            ai_ans = get_ai_answer(question_text)
+            if ai_ans:
+                print_lg(f"AI Answering: '{question_text}' -> Generated Answer: '{ai_ans}'")
+                return ai_ans
+    except Exception as e:
+        print_lg(f"Error getting AI answer: {e}")
+
     q = question_text.lower()
     
+    # Yes/No default (Move to top so yes/no questions about experience/relocation are answered as Yes/No instead of numbers)
+    if q.startswith("are you") or q.startswith("do you") or q.startswith("have you") or q.startswith("is your") or q.startswith("would you") or q.startswith("can you") or "willing" in q or "confirm" in q or "interested" in q:
+        return "yes|agree|accept"
+        
     # Notice Period
     if any(k in q for k in ["notice", "how soon", "joining time", "availability", "join in", "serving"]):
         return "immediate|15 days|0 days|serving"
@@ -678,28 +813,31 @@ def get_answer_for_question(question_text):
     if "veteran" in q:
         return "no"
         
-    # Yes/No default
-    if q.startswith("are you") or q.startswith("do you") or "willing" in q or "confirm" in q:
-        return "yes|agree|accept"
-        
     return ""
 
 def is_chatbot_active(driver) -> bool:
     try:
         container = driver.find_element(By.ID, "chatbot-container")
-        if container.is_displayed() and container.find_elements(By.XPATH, ".//*"):
-            return True
+        if container.is_displayed():
+            # Check if there are visible interactive elements inside
+            inputs = container.find_elements(By.XPATH, ".//input[not(@type='hidden')] | .//textarea | .//select")
+            if any(i.is_displayed() for i in inputs):
+                return True
     except Exception:
         pass
     
     overlay_selectors = [
-        "//div[contains(@class, 'chatbot_Overlay')]",
+        "//div[contains(@class, 'chatbot_Drawer') and not(contains(@class, 'Overlay'))]",
+        "//div[contains(@class, 'chatbot_DrawerContentWrapper')]",
         "//div[contains(@class, 'chatbot-container')]",
-        "//div[contains(@id, 'chatbot')]",
-        "//div[contains(@class, 'modal') or contains(@class, 'drawer') or contains(@class, 'form') or contains(@class, 'overlay')]",
+        "//div[contains(@id, 'chatbot') and not(contains(@class, 'Overlay')) and not(contains(@class, 'overlay'))]",
+        "//div[(contains(@class, 'modal') or contains(@class, 'drawer') or contains(@class, 'Drawer')) and not(contains(@class, 'Overlay')) and not(contains(@class, 'overlay'))]",
+        "//div[contains(@class, 'chatbot_Overlay')]",
         "//div[contains(@class, 'Overlay') and not(contains(@id, 'save')) and not(contains(@class, 'save'))]",
         "//form[contains(@class, 'apply') or contains(@class, 'question') or contains(@class, 'screening')]"
     ]
+    
+    active_overlay = None
     for sel in overlay_selectors:
         try:
             elements = driver.find_elements(By.XPATH, sel)
@@ -708,11 +846,61 @@ def is_chatbot_active(driver) -> bool:
                     cls = el.get_attribute("class") or ""
                     id_val = el.get_attribute("id") or ""
                     if "header" not in cls.lower() and "header" not in id_val.lower():
-                        return True
+                        active_overlay = el
+                        break
+            if active_overlay:
+                break
         except Exception:
             pass
             
-    # Check if there are visible input/textarea/select/checkbox/radio elements (potential screening questions)
+    if active_overlay:
+        try:
+            # Check if this active overlay has any visible input/textarea/select elements inside
+            interactive = active_overlay.find_elements(By.XPATH, ".//input[not(@type='hidden') and not(@type='submit') and not(@type='button')] | .//textarea | .//select")
+            if any(el.is_displayed() for el in interactive):
+                return True
+                
+            # Check if there are visible radio buttons or checkboxes (even if hidden visually, their label is visible)
+            radio_checkboxes = active_overlay.find_elements(By.XPATH, ".//input[@type='radio' or @type='checkbox']")
+            for rc in radio_checkboxes:
+                rc_id = rc.get_attribute("id") or ""
+                label_displayed = False
+                if rc_id:
+                    labels = driver.find_elements(By.XPATH, f"//label[@for='{rc_id}']")
+                    if labels and labels[0].is_displayed():
+                        label_displayed = True
+                if rc.is_displayed() or label_displayed or rc.find_element(By.XPATH, "..").is_displayed():
+                    return True
+                    
+            # Check if there are visible custom choices (excluding headers or closing/unrelated links)
+            choices = active_overlay.find_elements(By.XPATH, ".//button | .//span | .//li | .//div[contains(@class, 'option') or contains(@class, 'value') or contains(@class, 'item')]")
+            for ch in choices:
+                if ch.is_displayed() and ch.is_enabled():
+                    txt = ch.text.strip().lower()
+                    if txt and len(txt) < 30 and not any(k in txt for k in ["save", "apply", "report", "similar", "share"]):
+                        is_msg = False
+                        curr = ch
+                        for _ in range(3):
+                            if curr:
+                                parent_cls = curr.get_attribute("class") or ""
+                                if any(k in parent_cls.lower() for k in ["msg", "bubble", "botmsg"]):
+                                    is_msg = True
+                                    break
+                                try:
+                                    curr = curr.find_element(By.XPATH, "./parent::*")
+                                except Exception:
+                                    break
+                            else:
+                                break
+                        if not is_msg:
+                            return True
+        except Exception:
+            pass
+            
+        # If the overlay exists but contains no active/visible interactive inputs/options, it is considered complete/inactive
+        return False
+            
+    # Check if there are visible input/textarea/select/checkbox/radio elements globally (potential screening questions)
     try:
         all_elements = driver.find_elements(By.XPATH, "//input[not(@type='hidden') and not(contains(@class, 'header'))] | //textarea | //select")
         visible_interactive = []
@@ -768,11 +956,12 @@ def fill_naukri_questions(driver):
         # Find active overlay container
         overlay = None
         overlay_selectors = [
-            "//div[contains(@class, 'chatbot_Overlay')]",
+            "//div[contains(@class, 'chatbot_Drawer') and not(contains(@class, 'Overlay'))]",
+            "//div[contains(@class, 'chatbot_DrawerContentWrapper')]",
             "//div[contains(@class, 'chatbot-container')]",
-            "//div[contains(@id, 'chatbot')]",
-            "//div[contains(@class, 'modal')]",
-            "//div[contains(@class, 'drawer')]",
+            "//div[contains(@id, 'chatbot') and not(contains(@class, 'Overlay')) and not(contains(@class, 'overlay'))]",
+            "//div[(contains(@class, 'modal') or contains(@class, 'drawer') or contains(@class, 'Drawer')) and not(contains(@class, 'Overlay')) and not(contains(@class, 'overlay'))]",
+            "//div[contains(@class, 'chatbot_Overlay')]",
             "//div[contains(@class, 'Overlay') and not(contains(@id, 'save')) and not(contains(@class, 'save'))]"
         ]
         for sel in overlay_selectors:
@@ -807,10 +996,52 @@ def fill_naukri_questions(driver):
                 
             visible_choices = [el for el in choice_elements if el.is_displayed() and el.is_enabled() and el.text.strip()]
             
-            # Filter out choices that match navigation or unrelated actions
+            # Filter out choices that match navigation or unrelated actions, or are static text
             filtered_choices = []
             for el in visible_choices:
                 txt = el.text.strip().lower()
+                if not txt:
+                    continue
+                # Skip static text descriptions or headers/messages
+                if len(txt) > 40:
+                    continue
+                # Exclude elements inside a message bubble/container
+                is_msg = False
+                try:
+                    curr = el
+                    for _ in range(3):
+                        if curr:
+                            cls = curr.get_attribute("class") or ""
+                            if any(k in cls.lower() for k in ["msg", "bubble", "botmsg", "chatlist"]):
+                                is_msg = True
+                                break
+                            curr = curr.find_element(By.XPATH, "./parent::*")
+                        else:
+                            break
+                except Exception:
+                    pass
+                if is_msg:
+                    continue
+                    
+                # Exclude elements inside a radio/checkbox container (they are handled by the radio/checkbox clicker)
+                is_radio_checkbox_container = False
+                try:
+                    curr = el
+                    for _ in range(4):
+                        if curr:
+                            cls = curr.get_attribute("class") or ""
+                            id_val = curr.get_attribute("id") or ""
+                            if any(k in cls.lower() or k in id_val.lower() for k in ["radio", "checkbox", "singleselect", "multiselect"]):
+                                is_radio_checkbox_container = True
+                                break
+                            curr = curr.find_element(By.XPATH, "./parent::*")
+                        else:
+                            break
+                except Exception:
+                    pass
+                if is_radio_checkbox_container:
+                    continue
+                    
                 if txt in ["save", "save job", "report", "similar jobs", "share"]:
                     continue
                 filtered_choices.append(el)
@@ -819,11 +1050,15 @@ def fill_naukri_questions(driver):
                 question_text = ""
                 try:
                     if overlay:
-                        chat_bubbles = overlay.find_elements(By.XPATH, ".//div[contains(@class, 'msg') or contains(@class, 'bubble') or contains(@class, 'chat') or contains(@class, 'question')] | .//span[contains(@class, 'msg') or contains(@class, 'bubble') or contains(@class, 'chat') or contains(@class, 'question')]")
+                        chat_bubbles = overlay.find_elements(By.XPATH, ".//div[contains(@class, 'msg') or contains(@class, 'bubble') or (contains(@class, 'chat') and not(contains(@class, 'chatbot_')) and not(contains(@class, 'chatbot-'))) or contains(@class, 'question')] | .//span[contains(@class, 'msg') or contains(@class, 'bubble') or (contains(@class, 'chat') and not(contains(@class, 'chatbot_')) and not(contains(@class, 'chatbot-'))) or contains(@class, 'question')]")
                     else:
-                        chat_bubbles = driver.find_elements(By.XPATH, "//div[contains(@class, 'msg') or contains(@class, 'bubble') or contains(@class, 'chat') or contains(@class, 'question')] | //span[contains(@class, 'msg') or contains(@class, 'bubble') or contains(@class, 'chat') or contains(@class, 'question')]")
+                        chat_bubbles = driver.find_elements(By.XPATH, "//div[contains(@class, 'msg') or contains(@class, 'bubble') or (contains(@class, 'chat') and not(contains(@class, 'chatbot_')) and not(contains(@class, 'chatbot-'))) or contains(@class, 'question')] | //span[contains(@class, 'msg') or contains(@class, 'bubble') or (contains(@class, 'chat') and not(contains(@class, 'chatbot_')) and not(contains(@class, 'chatbot-'))) or contains(@class, 'question')]")
                     if chat_bubbles:
-                        question_text = chat_bubbles[-1].text.strip()
+                        for b in reversed(chat_bubbles):
+                            txt = b.text.strip()
+                            if txt and len(txt) > 5 and not any(k in txt.lower() for k in ["thank you for showing interest", "answer all the recruiter"]):
+                                question_text = txt
+                                break
                 except Exception:
                     pass
                 
@@ -928,7 +1163,21 @@ def fill_naukri_questions(driver):
             else:
                 radio_checkboxes = driver.find_elements(By.XPATH, "//input[@type='radio' or @type='checkbox']")
                 
-            visible_radios = [el for el in radio_checkboxes if el.is_displayed() and el.is_enabled()]
+            visible_radios = []
+            for rc in radio_checkboxes:
+                try:
+                    if rc.is_enabled():
+                        rc_id = rc.get_attribute("id") or ""
+                        label_displayed = False
+                        if rc_id:
+                            labels = driver.find_elements(By.XPATH, f"//label[@for='{rc_id}']")
+                            if labels and labels[0].is_displayed():
+                                label_displayed = True
+                        if rc.is_displayed() or label_displayed or rc.find_element(By.XPATH, "..").is_displayed():
+                            visible_radios.append(rc)
+                except Exception:
+                    pass
+                    
             for rc in visible_radios:
                 rc_id = rc.get_attribute("id") or ""
                 rc_value = rc.get_attribute("value") or ""
@@ -980,19 +1229,27 @@ def fill_naukri_questions(driver):
         try:
             submit_selectors = []
             if overlay:
-                submit_selectors.append((By.XPATH, ".//button[contains(normalize-space(.), 'Save') or contains(normalize-space(.), 'Submit') or contains(normalize-space(.), 'Continue') or contains(normalize-space(.), 'Send') or contains(normalize-space(.), 'Apply')]"))
+                submit_selectors.extend([
+                    (By.XPATH, ".//button[contains(normalize-space(text()), 'Save') or contains(normalize-space(text()), 'Submit') or contains(normalize-space(text()), 'Continue') or contains(normalize-space(text()), 'Send') or contains(normalize-space(text()), 'Apply')]"),
+                    (By.XPATH, ".//*[self::button or self::input or self::div or self::span][contains(@class, 'send') or contains(@class, 'submit') or contains(@class, 'continue') or contains(@class, 'save')][contains(text(), 'Save') or contains(text(), 'Submit') or contains(text(), 'Continue') or contains(text(), 'Send') or contains(text(), 'Apply')]"),
+                    (By.XPATH, ".//div[contains(@class, 'sendMsg') or contains(@id, 'sendMsg') or text()='Save' or text()='Submit' or text()='Continue']")
+                ])
             else:
                 submit_selectors.extend([
-                    (By.XPATH, "//button[contains(@class, 'submit') or contains(@class, 'continue') or contains(text(), 'Submit') or contains(text(), 'Continue') or contains(text(), 'Apply') or contains(text(), 'Save')]"),
+                    (By.XPATH, "//*[self::button or self::input or self::div or self::span][contains(@class, 'send') or contains(@class, 'submit') or contains(@class, 'continue') or contains(@class, 'save')][contains(text(), 'Submit') or contains(text(), 'Continue') or contains(text(), 'Apply') or contains(text(), 'Save')]"),
                     (By.XPATH, "//input[@type='submit' or @value='Submit' or @value='Continue']"),
-                    (By.XPATH, "//button[contains(., 'Send') or contains(., 'Submit') or contains(., 'Apply')]")
+                    (By.XPATH, "//*[self::button or self::input or self::div or self::span][contains(normalize-space(text()), 'Send') or contains(normalize-space(text()), 'Submit') or contains(normalize-space(text()), 'Apply') or contains(normalize-space(text()), 'Save')]")
                 ])
             
             for by, val in submit_selectors:
                 try:
                     elements = overlay.find_elements(by, val) if overlay else driver.find_elements(by, val)
                     for el in elements:
-                        if el.is_displayed() and el.is_enabled():
+                        if el.is_displayed():
+                            cls = el.get_attribute("class") or ""
+                            # Exclude elements that are explicitly disabled
+                            if "disabled" in cls.lower() and "send" in cls.lower():
+                                continue
                             submit_btn = el
                             break
                     if submit_btn:
@@ -1116,28 +1373,53 @@ def apply_to_current_job(job_id, title, company, job_url):
         apply_btn.click()
         time.sleep(2)
         
-        # Check if screening questions/form/chatbot appears (if URL didn't change to success or no success text)
-        current_url = driver.current_url.lower()
-        success_indicators = ["apply-success", "success"]
-        page_text = driver.page_source.lower()
+        # Check if the page has an active chatbot before checking immediate success text, 
+        # because the success text might be a false positive from similar jobs elements.
+        chatbot_initially_active = is_chatbot_active(driver)
         
-        has_immediate_success = any(ind in current_url for ind in success_indicators) or any(ind in page_text for ind in ["applied successfully", "application sent"])
+        has_immediate_success = False
+        if not chatbot_initially_active:
+            current_url = driver.current_url.lower()
+            success_indicators = ["apply-success", "success"]
+            page_text = driver.page_source.lower()
+            has_immediate_success = any(ind in current_url for ind in success_indicators) or any(ind in page_text for ind in ["applied successfully", "application sent"])
         
-        if not has_immediate_success:
+        if chatbot_initially_active or not has_immediate_success:
             print_lg("Checking for screening questions or chatbot form...")
             fill_naukri_questions(driver)
             
         # Re-check success status after form submission
         time.sleep(2)
-        current_url = driver.current_url.lower()
-        page_text = driver.page_source.lower()
+        chatbot_still_active = is_chatbot_active(driver)
         
-        if any(ind in current_url for ind in success_indicators) or any(ind in page_text for ind in ["applied successfully", "application sent", "success"]):
+        # Verify success
+        current_url = driver.current_url.lower()
+        success_indicators = ["apply-success", "success"]
+        page_text = driver.page_source.lower()
+        has_success = any(ind in current_url for ind in success_indicators) or any(ind in page_text for ind in ["applied successfully", "application sent"])
+        
+        if chatbot_still_active:
+            print_lg(f"Chatbot/questions still active after processing. Logging application as Failed (Questions Incomplete) for {title}.")
+            save_applied_job(job_id, title, company, job_url, "Failed (Questions Incomplete)")
+        elif has_success:
             print_lg(f"Direct Apply Success for: {title} | {company}")
             save_applied_job(job_id, title, company, job_url, "Applied")
         else:
-            print_lg(f"Applied clicked and form processed for {title}, logged as Applied.")
-            save_applied_job(job_id, title, company, job_url, "Applied")
+            # Fallback check - check if the apply button text changed to "Applied"
+            btn_applied = False
+            try:
+                apply_btn_refreshed = driver.find_element(By.XPATH, "//button[contains(@id, 'apply') or contains(@class, 'apply')]")
+                if "applied" in apply_btn_refreshed.text.lower():
+                    btn_applied = True
+            except Exception:
+                pass
+                
+            if btn_applied:
+                print_lg(f"Apply button text updated to 'Applied' for {title}.")
+                save_applied_job(job_id, title, company, job_url, "Applied")
+            else:
+                print_lg(f"Application status uncertain for {title}, logging as Applied (Verification Pending).")
+                save_applied_job(job_id, title, company, job_url, "Applied")
                 
     except Exception as e:
         print_lg(f"Error applying to job {title}: {e}")
