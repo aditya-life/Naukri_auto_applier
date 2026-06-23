@@ -650,8 +650,9 @@ def is_chatbot_active(driver) -> bool:
         "//div[contains(@class, 'chatbot_Overlay')]",
         "//div[contains(@class, 'chatbot-container')]",
         "//div[contains(@id, 'chatbot')]",
-        "//div[contains(@class, 'modal-') or contains(@class, 'drawer-')]",
-        "//div[contains(@class, 'Overlay') and not(contains(@id, 'save')) and not(contains(@class, 'save'))]"
+        "//div[contains(@class, 'modal') or contains(@class, 'drawer') or contains(@class, 'form') or contains(@class, 'overlay')]",
+        "//div[contains(@class, 'Overlay') and not(contains(@id, 'save')) and not(contains(@class, 'save'))]",
+        "//form[contains(@class, 'apply') or contains(@class, 'question') or contains(@class, 'screening')]"
     ]
     for sel in overlay_selectors:
         try:
@@ -664,6 +665,16 @@ def is_chatbot_active(driver) -> bool:
                         return True
         except Exception:
             pass
+            
+    # Check if there are visible input/textarea elements (potential screening questions) on the page
+    try:
+        inputs = driver.find_elements(By.XPATH, "//input[@type='text' or @type='number' or not(@type)] | //textarea")
+        visible_inputs = [el for el in inputs if el.is_displayed() and el.is_enabled() and el.get_attribute("type") not in ["submit", "button", "hidden", "radio", "checkbox"]]
+        if visible_inputs:
+            return True
+    except Exception:
+        pass
+        
     return False
 
 def fill_naukri_questions(driver):
