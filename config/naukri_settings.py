@@ -30,8 +30,8 @@ search_location = "India"
 experience_years = 4  # 0 for fresher, 1, 2, 3 etc.
 
 # Enable AI answering for any screening questionnaires if they appear
-use_AI = False
-ai_provider = "gemini" # "openai", "gemini", "deepseek"
+use_AI = True
+ai_provider = "gemini" # "openai", "gemini", "deepseek", "ollama", "local_nlp"
 
 # ==============================================================================
 # Resume Matching & Filtering Settings (Resume Matching Feature)

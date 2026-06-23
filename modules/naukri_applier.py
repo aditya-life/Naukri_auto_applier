@@ -796,13 +796,14 @@ Instructions:
                 
         # Call Gemini API
         elif ai_provider == "gemini":
-            if "openai" in llm_api_url.lower():
+            # If default OpenAI URL is left, or if it is the official OpenAI endpoint, call Google's API directly
+            if "openai" in llm_api_url.lower() and "api.openai.com" not in llm_api_url.lower():
                 headers = {
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json"
                 }
                 data = {
-                    "model": llm_model or "gemini-1.5-flash",
+                    "model": llm_model or "gemini-2.5-flash-lite",
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
@@ -813,7 +814,11 @@ Instructions:
                 if response.status_code == 200:
                     return response.json()["choices"][0]["message"]["content"].strip()
             else:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{llm_model or 'gemini-1.5-flash'}:generateContent?key={api_key}"
+                models_to_try = [llm_model or "gemini-2.5-flash-lite"]
+                for fb in ["gemini-2.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-lite-latest"]:
+                    if fb not in models_to_try:
+                        models_to_try.append(fb)
+                
                 headers = {"Content-Type": "application/json"}
                 data = {
                     "contents": [
@@ -827,9 +832,22 @@ Instructions:
                         "temperature": 0.1
                     }
                 }
-                response = requests.post(url, headers=headers, json=data, timeout=15)
-                if response.status_code == 200:
-                    return response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                
+                last_error = ""
+                for model in models_to_try:
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+                    try:
+                        response = requests.post(url, headers=headers, json=data, timeout=15)
+                        if response.status_code == 200:
+                            return response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        else:
+                            last_error = f"Model '{model}' returned status {response.status_code}: {response.text}"
+                            print_lg(last_error)
+                    except Exception as e:
+                        last_error = f"Model '{model}' failed with exception: {e}"
+                        print_lg(last_error)
+                
+                print_lg(f"All Gemini models failed. Last error: {last_error}")
                     
         # Call OpenAI / Deepseek API
         elif ai_provider in ["openai", "deepseek"]:
