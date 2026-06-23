@@ -89,5 +89,5 @@ use_naukri_official_match = True
 # Match requirements if using Naukri's official match (True or False)
 # If True, the job will only be applied to if Naukri says that specific field is a match.
 require_keyskills_match = True       # Must match key skills according to Naukri
-require_experience_match = False     # Must match experience according to Naukri
+require_experience_match = True     # Must match experience according to Naukri
 require_location_match = False       # Must match location according to Naukri

@@ -712,12 +712,40 @@ def is_chatbot_active(driver) -> bool:
         except Exception:
             pass
             
-    # Check if there are visible input/textarea elements (potential screening questions) on the page
+    # Check if there are visible input/textarea/select/checkbox/radio elements (potential screening questions)
     try:
-        inputs = driver.find_elements(By.XPATH, "//input[@type='text' or @type='number' or not(@type)] | //textarea")
-        visible_inputs = [el for el in inputs if el.is_displayed() and el.is_enabled() and el.get_attribute("type") not in ["submit", "button", "hidden", "radio", "checkbox"]]
-        if visible_inputs:
+        all_elements = driver.find_elements(By.XPATH, "//input[not(@type='hidden') and not(contains(@class, 'header'))] | //textarea | //select")
+        visible_interactive = []
+        for el in all_elements:
+            try:
+                if el.is_displayed() and el.is_enabled():
+                    name = el.get_attribute("name") or ""
+                    id_val = el.get_attribute("id") or ""
+                    placeholder = el.get_attribute("placeholder") or ""
+                    cls = el.get_attribute("class") or ""
+                    
+                    if any(k in name.lower() or k in id_val.lower() or k in placeholder.lower() or k in cls.lower() for k in ["search", "header", "qsb"]):
+                        continue
+                        
+                    typ = el.get_attribute("type") or ""
+                    if typ in ["submit", "button"] and not any(k in name.lower() or k in id_val.lower() for k in ["choice", "option", "answer"]):
+                        continue
+                        
+                    visible_interactive.append(el)
+            except Exception:
+                pass
+                
+        if visible_interactive:
             return True
+    except Exception:
+        pass
+        
+    # Check if there is any visible form tag (excluding header/search forms)
+    try:
+        forms = driver.find_elements(By.XPATH, "//form[not(contains(@class, 'search')) and not(contains(@class, 'header'))]")
+        for f in forms:
+            if f.is_displayed():
+                return True
     except Exception:
         pass
         
@@ -893,40 +921,103 @@ def fill_naukri_questions(driver):
         except Exception as e:
             print_lg("Error handling form inputs:", e)
             
-        if inputs_filled or options_clicked:
-            try:
-                submit_selectors = []
-                if overlay:
-                    submit_selectors.append((By.XPATH, ".//button[contains(normalize-space(.), 'Save') or contains(normalize-space(.), 'Submit') or contains(normalize-space(.), 'Continue') or contains(normalize-space(.), 'Send') or contains(normalize-space(.), 'Apply')]"))
-                else:
-                    submit_selectors.extend([
-                        (By.XPATH, "//button[contains(@class, 'submit') or contains(@class, 'continue') or contains(text(), 'Submit') or contains(text(), 'Continue') or contains(text(), 'Apply') or contains(text(), 'Save')]"),
-                        (By.XPATH, "//input[@type='submit' or @value='Submit' or @value='Continue']"),
-                        (By.XPATH, "//button[contains(., 'Send') or contains(., 'Submit') or contains(., 'Apply')]")
-                    ])
+        # Handle Radio buttons and Checkboxes
+        try:
+            if overlay:
+                radio_checkboxes = overlay.find_elements(By.XPATH, ".//input[@type='radio' or @type='checkbox']")
+            else:
+                radio_checkboxes = driver.find_elements(By.XPATH, "//input[@type='radio' or @type='checkbox']")
                 
-                submit_btn = None
-                for by, val in submit_selectors:
+            visible_radios = [el for el in radio_checkboxes if el.is_displayed() and el.is_enabled()]
+            for rc in visible_radios:
+                rc_id = rc.get_attribute("id") or ""
+                rc_value = rc.get_attribute("value") or ""
+                label_text = ""
+                
+                # Check for sibling label with matching 'for'
+                if rc_id:
                     try:
-                        elements = overlay.find_elements(by, val) if overlay else driver.find_elements(by, val)
-                        for el in elements:
-                            if el.is_displayed() and el.is_enabled():
-                                submit_btn = el
-                                break
-                        if submit_btn:
-                            break
+                        labels = driver.find_elements(By.XPATH, f"//label[@for='{rc_id}']")
+                        if labels:
+                            label_text = labels[0].text.strip()
                     except Exception:
                         pass
-                if submit_btn:
+                
+                # Fallback to parent text
+                if not label_text:
+                    try:
+                        parent = rc.find_element(By.XPATH, "..")
+                        label_text = parent.text.strip()
+                    except Exception:
+                        pass
+                        
+                if not label_text:
+                    label_text = rc_value
+                    
+                question_text = get_question_text(driver, rc)
+                expected_ans = get_answer_for_question(question_text)
+                
+                print_lg(f"Radio/Checkbox Option: '{label_text}' for question '{question_text}' -> Expected Match: '{expected_ans}'")
+                
+                # Check if label/value matches expected answer
+                expected_parts = [p.strip().lower() for p in expected_ans.split('|') if p.strip()]
+                matched = False
+                for part in expected_parts:
+                    if part in label_text.lower() or part in rc_value.lower():
+                        matched = True
+                        break
+                        
+                if matched:
+                    if not rc.is_selected():
+                        print_lg(f"Selecting radio/checkbox option: '{label_text}'")
+                        driver.execute_script("arguments[0].click();", rc)
+                        options_clicked = True
+        except Exception as e:
+            print_lg("Error handling radio/checkbox elements:", e)
+            
+        # Locate and click submit/continue/save button
+        submit_btn = None
+        try:
+            submit_selectors = []
+            if overlay:
+                submit_selectors.append((By.XPATH, ".//button[contains(normalize-space(.), 'Save') or contains(normalize-space(.), 'Submit') or contains(normalize-space(.), 'Continue') or contains(normalize-space(.), 'Send') or contains(normalize-space(.), 'Apply')]"))
+            else:
+                submit_selectors.extend([
+                    (By.XPATH, "//button[contains(@class, 'submit') or contains(@class, 'continue') or contains(text(), 'Submit') or contains(text(), 'Continue') or contains(text(), 'Apply') or contains(text(), 'Save')]"),
+                    (By.XPATH, "//input[@type='submit' or @value='Submit' or @value='Continue']"),
+                    (By.XPATH, "//button[contains(., 'Send') or contains(., 'Submit') or contains(., 'Apply')]")
+                ])
+            
+            for by, val in submit_selectors:
+                try:
+                    elements = overlay.find_elements(by, val) if overlay else driver.find_elements(by, val)
+                    for el in elements:
+                        if el.is_displayed() and el.is_enabled():
+                            submit_btn = el
+                            break
+                    if submit_btn:
+                        break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+            
+        if inputs_filled or options_clicked or submit_btn:
+            if submit_btn:
+                try:
                     print_lg(f"Clicking form submit/continue button: '{submit_btn.text}'")
                     driver.execute_script("arguments[0].click();", submit_btn)
                     time.sleep(3)
                     step += 1
                     continue
-            except Exception as e:
-                print_lg("Error clicking submit button:", e)
-                
-        break
+                except Exception as e:
+                    print_lg("Error clicking submit button:", e)
+            else:
+                time.sleep(2)
+                step += 1
+                continue
+        else:
+            break
 
 def apply_to_current_job(job_id, title, company, job_url):
     '''
