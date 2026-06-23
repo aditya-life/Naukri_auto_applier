@@ -23,7 +23,7 @@ safe_mode = True                    # True or False, Note: True or False are cas
 
 # Search Configuration
 # Job search queries to loop through
-search_keywords = ["IT Support Engineer", "Service Desk Engineer", "L1 Support", "L2 Support", "Desktop Support", "System Administrator"]
+search_keywords = ["IT Support Engineer, Service Desk Engineer, L1 Support, L2 Support, Desktop Support, System Administrator"]
 # Naukri locations
 search_location = "India"
 # Naukri experience level (Years)
