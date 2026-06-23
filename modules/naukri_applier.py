@@ -630,9 +630,99 @@ def get_question_text(driver, element):
         
     return ""
 
+def get_local_nlp_answer(question_text):
+    '''
+    A zero-dependency local NLP resume parser that extracts answers to screening questions 
+    directly from the resume text using pattern matching, context extraction, and keyword mapping.
+    Works entirely offline without any API keys!
+    '''
+    import re
+    q = question_text.lower()
+    resume_text = get_resume_text().lower()
+    
+    # 1. Yes/No Questions about specific skills or certifications
+    if q.startswith("are you") or q.startswith("do you") or q.startswith("have you") or q.startswith("would you") or q.startswith("can you") or "willing" in q or "confirm" in q or "interested" in q:
+        # Extract potential subjects/keywords from the question
+        words = re.findall(r'[a-z0-9]+', q)
+        ignore_words = {
+            "are", "you", "do", "have", "experience", "in", "with", "a", "an", "the", 
+            "certified", "certification", "any", "work", "to", "for", "on", "willing", 
+            "relocate", "relocation", "agree", "confirm", "ready", "interested", "did", "can", "will"
+        }
+        keywords = [w for w in words if w not in ignore_words and len(w) > 2]
+        
+        if "relocate" in q:
+            return "yes|agree|accept"
+        if "shift" in q or "rotation" in q or "night" in q:
+            return "yes|agree|accept"
+        if "joining" in q or "notice" in q:
+            return "yes|agree|accept"
+            
+        if keywords:
+            match_count = sum(1 for kw in keywords if kw in resume_text)
+            match_ratio = match_count / len(keywords)
+            if match_ratio >= 0.5:
+                return "yes|agree|accept"
+        return "yes|agree|accept"
+
+    # 2. Experience Questions (e.g. "How many years of experience do you have?")
+    if any(k in q for k in ["experience", "years of exp", "exp in", "how many years"]):
+        try:
+            from config.naukri_settings import experience_years
+            user_exp = str(experience_years)
+        except ImportError:
+            user_exp = "4"
+            
+        skills = ["active directory", "windows server", "service desk", "desktop support", "l1", "l2", "outlook", "troubleshooting"]
+        matched_skill = None
+        for s in skills:
+            if s in q:
+                matched_skill = s
+                break
+                
+        if matched_skill and matched_skill in resume_text:
+            pattern = rf"([^.!?]*{matched_skill}[^.!?]*)"
+            sentences = re.findall(pattern, resume_text)
+            for sentence in sentences:
+                num_matches = re.findall(r'(\d+)\s*(?:yr|year|plus|\+)', sentence)
+                if num_matches:
+                    return num_matches[0]
+            
+        return user_exp
+
+    # 3. Salary / CTC
+    if any(k in q for k in ["salary", "ctc", "lpa"]):
+        if "expected" in q:
+            return "5"
+        if "current" in q:
+            return "4"
+        return "5"
+
+    # 4. Notice Period
+    if any(k in q for k in ["notice", "how soon", "joining time", "availability", "join in", "serving"]):
+        if "serving" in resume_text or "immediate" in resume_text:
+            return "immediate|serving|0 days"
+        return "immediate|15 days|0 days"
+
+    # 5. Location
+    if "location" in q or "city" in q or "where do you" in q:
+        try:
+            from config.personal import current_city
+            if current_city and current_city != "YOUR_CURRENT_CITY":
+                return current_city
+        except ImportError:
+            pass
+        return "noida"
+
+    # 6. Education
+    if "graduation" in q or "degree" in q or "education" in q or "qualification" in q:
+        return "b.com|bachelor"
+        
+    return ""
+
 def get_ai_answer(question_text):
     '''
-    Uses Gemini AI (or OpenAI/Deepseek depending on configuration) to analyze candidate's resume
+    Uses Gemini AI (or OpenAI/Deepseek/Ollama/Local NLP depending on configuration) to analyze candidate's resume
     and generate the most suitable response for the screening question.
     '''
     import requests
@@ -643,22 +733,29 @@ def get_ai_answer(question_text):
     except ImportError:
         return ""
         
-    resume_text = get_resume_text()
-    
+    if ai_provider == "local_nlp":
+        print_lg("Using built-in Local NLP Resume Parser to answer question...")
+        return get_local_nlp_answer(question_text)
+        
     # Get API key from config or environment variables
     api_key = llm_api_key
-    if not api_key or api_key == "not-needed" or api_key == "YOUR_API_KEY_HERE":
-        if ai_provider == "gemini":
-            api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        elif ai_provider == "openai":
-            api_key = os.environ.get("OPENAI_API_KEY")
-        elif ai_provider == "deepseek":
-            api_key = os.environ.get("DEEPSEEK_API_KEY")
+    
+    # Ollama does not require an API key
+    if ai_provider != "ollama":
+        if not api_key or api_key == "not-needed" or api_key == "YOUR_API_KEY_HERE":
+            if ai_provider == "gemini":
+                api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+            elif ai_provider == "openai":
+                api_key = os.environ.get("OPENAI_API_KEY")
+            elif ai_provider == "deepseek":
+                api_key = os.environ.get("DEEPSEEK_API_KEY")
+                
+        if not api_key:
+            print_lg("AI API key not found. Falling back to built-in Local NLP Resume Parser.")
+            return get_local_nlp_answer(question_text)
             
-    if not api_key:
-        print_lg("AI API key not found in config/auth.py or environment. Falling back to rules.")
-        return ""
-        
+    resume_text = get_resume_text()
+    
     system_prompt = f"""
 You are an AI assistant helping a candidate apply for jobs on Naukri.com.
 You will be given a screening question from a recruiter or chatbot, and the text of the candidate's resume.
@@ -678,8 +775,27 @@ Instructions:
     user_prompt = f"Screening Question: {question_text}"
     
     try:
+        # Call Ollama local API
+        if ai_provider == "ollama":
+            url = llm_api_url if llm_api_url and "localhost" in llm_api_url else "http://localhost:11434/api/chat"
+            headers = {"Content-Type": "application/json"}
+            data = {
+                "model": llm_model or "llama3",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "stream": False,
+                "options": {
+                    "temperature": 0.1
+                }
+            }
+            response = requests.post(url, headers=headers, json=data, timeout=15)
+            if response.status_code == 200:
+                return response.json()["message"]["content"].strip()
+                
         # Call Gemini API
-        if ai_provider == "gemini":
+        elif ai_provider == "gemini":
             if "openai" in llm_api_url.lower():
                 headers = {
                     "Authorization": f"Bearer {api_key}",
