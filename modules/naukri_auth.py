@@ -20,7 +20,10 @@ def is_logged_in_naukri() -> bool:
     '''
     Checks if the user is currently logged in on Naukri.com
     '''
-    current_url = driver.current_url.lower()
+    current_url = driver.current_url
+    if not current_url:
+        return False
+    current_url = current_url.lower()
     
     # If the URL contains dashboard, homepage, mn-home, or profile, user is logged in
     if any(keyword in current_url for keyword in ["dashboard", "homepage", "mn-home", "profile", "recommendation"]):

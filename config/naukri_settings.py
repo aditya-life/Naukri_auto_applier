@@ -29,6 +29,11 @@ search_location = "India"
 # Naukri experience level (Years)
 experience_years = 4  # 0 for fresher, 1, 2, 3 etc.
 
+# Application Mode:
+# "search"         -> Search queries ko loop karke apply karega (Search keywords mode).
+# "recommendation" -> Naukri home page ke custom recommended jobs ko apply karega (Recommended jobs mode).
+application_mode = "search"
+
 # Enable AI answering for any screening questionnaires if they appear
 use_AI = True
 ai_provider = "gemini" # "openai", "gemini", "deepseek", "ollama", "local_nlp"

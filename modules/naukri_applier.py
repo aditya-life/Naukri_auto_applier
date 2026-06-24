@@ -1613,6 +1613,8 @@ def run_naukri_loop(max_pages=5):
                 title_el = None
                 for selector in [
                     (By.XPATH, ".//a[contains(@class, 'title') or contains(@class, 'job-title') or contains(@class, 'jobTupleTitle')]"),
+                    (By.XPATH, ".//p[contains(@class, 'title') or contains(@class, 'job-title')]"),
+                    (By.XPATH, ".//*[contains(@class, 'title') and not(local-name()='span')]"),
                     (By.XPATH, ".//a[contains(@href, '/job-listings')]"),
                     (By.XPATH, ".//a")
                 ]:
@@ -1635,7 +1637,8 @@ def run_naukri_loop(max_pages=5):
                 comp_selectors = [
                     (By.XPATH, ".//a[contains(@class, 'comp-name') or contains(@class, 'companyName') or contains(@class, 'compName')]"),
                     (By.XPATH, ".//div[contains(@class, 'comp-name') or contains(@class, 'companyName') or contains(@class, 'compName')]"),
-                    (By.XPATH, ".//span[contains(@class, 'companyName')]")
+                    (By.XPATH, ".//span[contains(@class, 'companyName') or contains(@class, 'subTitle')]"),
+                    (By.XPATH, ".//*[contains(@class, 'companyWrapper')]")
                 ]
                 for selector in comp_selectors:
                     try:
@@ -1658,6 +1661,13 @@ def run_naukri_loop(max_pages=5):
                         # Fallback to hashing URL
                         job_id = str(hash(job_url) & 0xffffffff)
                 else:
+                    # Fallback to data-job-id attribute of the card container
+                    job_id = card.get_attribute("data-job-id")
+                    if not job_id:
+                        # Hashing title to create unique ID
+                        job_id = str(hash(title + company) & 0xffffffff)
+                    
+                if not job_id:
                     continue
                     
                 if job_id in applied_job_ids:
@@ -1687,23 +1697,40 @@ def run_naukri_loop(max_pages=5):
                     
                 print_lg(f"\nJob [{idx}]: Opening details for '{title}' at '{company}' (Exp Req: {exp_text})...")
                 
-                # Open in a new tab using Selenium 4 native new_window to bypass popup blockers
+                # Open in a new tab using Selenium
                 handles_before = driver.window_handles
-                driver.switch_to.new_window('tab')
-                time.sleep(1)
                 
-                # Explicitly switch to the new window handle to guarantee focus
-                handles_after = driver.window_handles
-                new_handles = [h for h in handles_after if h not in handles_before]
-                if new_handles:
-                    driver.switch_to.window(new_handles[0])
+                if job_url:
+                    driver.switch_to.new_window('tab')
+                    time.sleep(1)
+                    
+                    handles_after = driver.window_handles
+                    new_handles = [h for h in handles_after if h not in handles_before]
+                    if new_handles:
+                        driver.switch_to.window(new_handles[0])
+                    else:
+                        try:
+                            driver.switch_to.window(driver.window_handles[-1])
+                        except Exception:
+                            pass
+                    
+                    driver.get(job_url)
                 else:
-                    try:
-                        driver.switch_to.window(driver.window_handles[-1])
-                    except Exception:
-                        pass
+                    # Click on the title element using JS to trigger the site's own new tab opening
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", title_el)
+                    time.sleep(0.5)
+                    driver.execute_script("arguments[0].click();", title_el)
+                    time.sleep(4)
+                    
+                    handles_after = driver.window_handles
+                    new_handles = [h for h in handles_after if h not in handles_before]
+                    if new_handles:
+                        driver.switch_to.window(new_handles[0])
+                        job_url = driver.current_url
+                    else:
+                        print_lg("Could not open job details in new tab. Skipping.")
+                        continue
                 
-                driver.get(job_url)
                 time.sleep(3) # Wait for job page to load
                 
                 # Try applying
